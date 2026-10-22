@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -77,6 +78,15 @@ TEST(SimpleSmootherParamTest, test_dynamic_parameters)
   rclcpp::spin_until_future_complete(node->get_node_base_interface(), results);
   EXPECT_EQ(params->max_its, 10);
 
+  // Atomic rejection must not apply the valid part of a mixed update.
+  results = rec_param->set_parameters_atomically(
+    {rclcpp::Parameter("test.tolerance", 0.75),
+      rclcpp::Parameter("test.max_its", 0)});
+  rclcpp::spin_until_future_complete(node->get_node_base_interface(), results);
+  EXPECT_FALSE(results.get().successful);
+  EXPECT_DOUBLE_EQ(params->tolerance, 0.5);
+  EXPECT_EQ(params->max_its, 10);
+
   // Negative weight is rejected, default unchanged
   results = rec_param->set_parameters_atomically(
     {rclcpp::Parameter("test.w_data", -0.1)});
@@ -108,13 +118,17 @@ TEST(SimpleSmootherParamTest, test_reject_while_smoothing)
 
   // A second thread holds the handler mutex, standing in for a smooth() in progress
   std::atomic<bool> release{false};
+  std::promise<void> lock_acquired;
+  auto lock_ready = lock_acquired.get_future();
   std::thread holder([&]() {
       std::lock_guard<std::mutex> lock(param_handler->getMutex());
+      lock_acquired.set_value();
       while (!release) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
     });
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  // Wait until the lock is actually held; a fixed sleep is not a synchronization barrier.
+  lock_ready.wait();
 
   // Update arrives while "smoothing": must be rejected, value unchanged
   auto results = rec_param->set_parameters_atomically(
@@ -215,13 +229,17 @@ TEST(SavitzkyGolayParamTest, test_reject_while_smoothing)
     node->get_node_services_interface());
 
   std::atomic<bool> release{false};
+  std::promise<void> lock_acquired;
+  auto lock_ready = lock_acquired.get_future();
   std::thread holder([&]() {
       std::lock_guard<std::mutex> lock(param_handler->getMutex());
+      lock_acquired.set_value();
       while (!release) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
     });
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  // Wait until the lock is actually held; a fixed sleep is not a synchronization barrier.
+  lock_ready.wait();
 
   auto results = rec_param->set_parameters_atomically(
     {rclcpp::Parameter("test.window_size", 9)});
@@ -311,13 +329,17 @@ TEST(SmootherServerParamTest, test_reject_while_smoothing)
     node->get_node_services_interface());
 
   std::atomic<bool> release{false};
+  std::promise<void> lock_acquired;
+  auto lock_ready = lock_acquired.get_future();
   std::thread holder([&]() {
       std::lock_guard<std::mutex> lock(param_handler->getMutex());
+      lock_acquired.set_value();
       while (!release) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
       }
     });
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  // Wait until the lock is actually held; a fixed sleep is not a synchronization barrier.
+  lock_ready.wait();
 
   auto results = rec_param->set_parameters_atomically(
     {rclcpp::Parameter("transform_tolerance", 0.5)});
